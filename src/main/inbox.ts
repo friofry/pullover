@@ -6,12 +6,7 @@ import type { InboxSnapshot } from '@shared/ipc'
 import type { ClassifiedPullRequest, PullRequest } from '@shared/types'
 import { isAuthError } from './github/auth-error'
 import { describeError } from './github/error-message'
-import {
-  type FetchedPullRequests,
-  fetchPullRequests,
-  fetchViewerLogin,
-  type GraphQLClient,
-} from './github/fetch-prs'
+import { fetchPullRequests, fetchViewerLogin, type GraphQLClient } from './github/fetch-prs'
 import { formatRestrictedOrgs } from './github/org-restriction'
 import { rateLimitResetAt } from './github/rate-limit'
 import type { AppStore } from './store'
@@ -29,10 +24,7 @@ export interface InboxDeps {
    */
   onAuthError?: () => void
   now?: () => string
-  fetchPrs?: (
-    client: GraphQLClient,
-    myLogin: string,
-  ) => Promise<PullRequest[] | FetchedPullRequests>
+  fetchPrs?: typeof fetchPullRequests
   fetchLogin?: typeof fetchViewerLogin
 }
 
@@ -62,7 +54,7 @@ export class Inbox {
   /** When a hit rate limit lifts. Refreshes are skipped until then. */
   private rateLimitedUntil: string | null = null
   private readonly now: () => string
-  private readonly fetchPrs: NonNullable<InboxDeps['fetchPrs']>
+  private readonly fetchPrs: typeof fetchPullRequests
   private readonly fetchLogin: typeof fetchViewerLogin
 
   constructor(private readonly deps: InboxDeps) {
@@ -198,10 +190,7 @@ export class Inbox {
       // Always fetch unfiltered: the picker's options come from what shows
       // up in the inbox, so the search itself must never be narrowed by the
       // repository selection.
-      const fetched = await this.fetchPrs(client, myLogin)
-      const { prs, restrictedOrgs } = Array.isArray(fetched)
-        ? { prs: fetched, restrictedOrgs: [] }
-        : fetched
+      const { prs, restrictedOrgs } = await this.fetchPrs(client, myLogin)
       this.prs = prs
 
       const settings = this.deps.store.getSettings()

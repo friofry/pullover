@@ -57,4 +57,11 @@ visualCase(
   ),
 )
 
+// A restricted org is a warning on an otherwise healthy list: the line has to
+// read as a note beside the staleness, not as a failed refresh.
+visualCase(
+  'restricted-org',
+  header(snapshot({ errorMessage: "status-im hasn't approved Pullover" })),
+)
+
 visualCase('update-ready', header(snapshot(), { status: 'ready', version: '0.9.0' }))
