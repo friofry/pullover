@@ -550,6 +550,51 @@ describe('fetchPullRequests', () => {
     expect(result.restrictedOrgs.length).toBeGreaterThan(0)
   })
 
+  it('recovers a restriction that only shows up on a detail batch second try', async () => {
+    // Eleven ids split into ten and one. The singleton fails transiently, and
+    // the retry is the request that hits the restriction — the one path where
+    // salvage used to be skipped, taking the other ten PRs down with it.
+    const ids = Array.from({ length: 11 }, (_, i) => `PR_${i + 1}`)
+    const restriction = new GraphqlResponseError(
+      { method: 'POST', url: 'https://api.github.com/graphql' },
+      {},
+      {
+        data: { nodes: [null] },
+        errors: [
+          { message: 'the `status-im` organization has enabled OAuth App access restrictions' },
+        ],
+      } as never,
+    )
+    let singletonAttempts = 0
+    const client = vi.fn(async (query: string, variables: Record<string, unknown>) => {
+      if (query === SEARCH_QUERY) return { search: { nodes: ids.map((id) => ({ id })) } }
+      if (query === DETAILS_QUERY) {
+        const batch = variables.ids as string[]
+        if (batch.length > 1) return { nodes: batch.map((id) => detailNode(id)) }
+        singletonAttempts += 1
+        if (singletonAttempts === 1) throw Object.assign(new Error('bad gateway'), { status: 502 })
+        throw restriction
+      }
+      throw new Error(`unexpected query: ${query}`)
+    })
+
+    const result = await fetchPullRequests(client, 'vlad')
+
+    expect(result.prs.map((pr) => pr.id)).toEqual(ids.slice(0, 10))
+    expect(result.restrictedOrgs).toEqual(['status-im'])
+  })
+
+  it('fails loudly when a search succeeds without a result set', async () => {
+    // Malformed rather than empty. Returning no ids here would quietly empty
+    // the inbox with a green tick next to it.
+    const client = vi.fn(async (query: string) => {
+      if (query === SEARCH_QUERY) return { search: null }
+      throw new Error(`unexpected query: ${query}`)
+    })
+
+    await expect(fetchPullRequests(client, 'vlad')).rejects.toThrow(/no result set/)
+  })
+
   it('keeps other PRs when a detail batch names a restricted org', async () => {
     const restriction = new GraphqlResponseError(
       { method: 'POST', url: 'https://api.github.com/graphql' },

@@ -22,7 +22,10 @@ describe('chunk', () => {
 
 describe('buildSearchQuery', () => {
   it('appends nothing when no organization is excluded', () => {
-    expect(buildSearchQuery('author', [])).toBe(buildSearchQuery('author'))
+    expect(buildSearchQuery('author', [])).toBe(
+      'is:pr is:open archived:false author:@me sort:updated-desc',
+    )
+    expect(buildSearchQuery('author')).toBe(buildSearchQuery('author', []))
   })
 
   it('excludes each organization that has not approved the OAuth app', () => {

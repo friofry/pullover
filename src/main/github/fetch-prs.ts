@@ -144,7 +144,11 @@ async function searchBucket(
       const data = await retryTransient(() =>
         client(SEARCH_QUERY, { q: buildSearchQuery(bucket, excluded) }),
       )
-      return { ids: idsFromSearch(searchNodes(data) ?? []), restrictedOrgs: excluded }
+      const nodes = searchNodes(data)
+      // An answer without a result set is broken, not empty. Reporting it as
+      // an empty bucket is the one mistake this whole function exists to avoid.
+      if (nodes === null) throw new Error('GitHub answered the search with no result set')
+      return { ids: idsFromSearch(nodes), restrictedOrgs: excluded }
     } catch (error) {
       const named = restrictedOrganizations(error)
       if (named.length === 0 || !isOnlyRestriction(error)) throw error
@@ -194,8 +198,9 @@ async function fetchDetails(
   maySplit = true,
 ): Promise<{ nodes: Array<PullRequestNode | null>; restrictedOrgs: string[] }> {
   const request = async (): Promise<Array<PullRequestNode | null>> => {
-    const data = await client(DETAILS_QUERY, { ids })
-    return detailNodes(data) ?? []
+    const nodes = detailNodes(await client(DETAILS_QUERY, { ids }))
+    if (nodes === null) throw new Error('GitHub answered the details query with no nodes')
+    return nodes
   }
 
   try {
@@ -210,7 +215,11 @@ async function fetchDetails(
       if (salvaged !== null) return { nodes: salvaged, restrictedOrgs: orgs }
     }
     if (!isTransientError(error) || !maySplit) throw error
-    if (ids.length === 1) return { nodes: await request(), restrictedOrgs: [] }
+    // Through `fetchDetails` rather than `request` directly: the second try is
+    // as likely to meet a restriction as the first, and a bare retry would
+    // throw it past the salvage above, losing every other batch with it.
+    // `maySplit: false` keeps it to the one extra attempt.
+    if (ids.length === 1) return fetchDetails(client, ids, false)
     const half = Math.ceil(ids.length / 2)
     const halves = await Promise.all([
       fetchDetails(client, ids.slice(0, half), false),
