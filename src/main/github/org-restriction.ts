@@ -2,6 +2,10 @@ import { GraphqlResponseError } from '@octokit/graphql'
 
 function messagesOf(error: unknown): string[] {
   const texts: string[] = []
+  // Both, deliberately. A GraphQL restriction carries the org in `errors`, and
+  // `message` is only a join of those — but the same restriction can arrive as
+  // a plain 403 whose sole copy of the text is `message`. The overlap costs
+  // nothing: the caller collects into a Set.
   if (error instanceof Error) texts.push(error.message)
   if (error instanceof GraphqlResponseError) {
     for (const entry of error.errors ?? []) texts.push(entry.message)
@@ -20,6 +24,11 @@ export function restrictedOrganizations(error: unknown): string[] {
     }
   }
   return [...orgs].sort()
+}
+
+/** Union of org names, deduplicated and sorted so the warning copy is stable. */
+export function mergeOrgs(...lists: string[][]): string[] {
+  return [...new Set(lists.flat())].sort()
 }
 
 /** The payload @octokit/graphql stashes when it throws on a partial GraphQL response. */

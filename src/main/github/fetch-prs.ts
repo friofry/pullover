@@ -2,7 +2,7 @@ import { mapPullRequest, type PullRequestNode } from '@core/map-pr'
 import { buildSearchQuery, chunk } from '@core/search-query'
 import { graphql } from '@octokit/graphql'
 import { type PullRequest, SEARCH_BUCKETS, type SearchBucket } from '@shared/types'
-import { graphqlPartialData, restrictedOrganizations } from './org-restriction'
+import { graphqlPartialData, mergeOrgs, restrictedOrganizations } from './org-restriction'
 import { DETAILS_QUERY, SEARCH_QUERY, VIEWER_QUERY } from './queries'
 import { isTransientError } from './transient-error'
 
@@ -76,20 +76,12 @@ export interface FetchedPullRequests {
 }
 
 function idsFromSearch(data: unknown): string[] {
-  if (typeof data !== 'object' || data === null || !('search' in data)) return []
-  const search = (data as { search?: { nodes?: Array<{ id?: string } | null> } }).search
-  return (search?.nodes ?? []).flatMap((node) => (node?.id !== undefined ? [node.id] : []))
+  const search = (data as { search?: { nodes?: Array<{ id?: string } | null> } } | null)?.search
+  return (search?.nodes ?? []).flatMap((node) => (node?.id === undefined ? [] : [node.id]))
 }
 
 function nodesFromDetails(data: unknown): Array<PullRequestNode | null> {
-  if (typeof data !== 'object' || data === null || !('nodes' in data)) return []
-  const nodes = (data as { nodes?: Array<PullRequestNode | null> }).nodes
-  return nodes ?? []
-}
-
-function searchQuery(bucket: SearchBucket, excludeOrgs: string[]): string {
-  const extra = excludeOrgs.map((org) => `-org:${org}`).join(' ')
-  return extra === '' ? buildSearchQuery(bucket) : `${buildSearchQuery(bucket)} ${extra}`
+  return (data as { nodes?: Array<PullRequestNode | null> } | null)?.nodes ?? []
 }
 
 /**
@@ -113,6 +105,15 @@ async function retryTransient<T>(attempt: () => Promise<T>): Promise<T> {
 }
 
 /**
+ * Rounds of "ask again without that org" before giving up on a clean answer.
+ * Bounded rather than open-ended because the only thing ending the loop is the
+ * wording of someone else's error message: GitHub normally names every
+ * locked-down org in one response, so a second round is already the unusual
+ * case.
+ */
+const MAX_EXCLUSION_ROUNDS = 5
+
+/**
  * One locked-down org must not blank the whole inbox: GitHub names the org
  * and @octokit/graphql then throws, even when other results are sitting in
  * `error.data`. Retry excluding those orgs until the search goes through.
@@ -122,23 +123,29 @@ async function searchBucket(
   bucket: SearchBucket,
 ): Promise<{ ids: string[]; restrictedOrgs: string[] }> {
   const excluded: string[] = []
-  for (let attempt = 0; attempt < 5; attempt++) {
+  let lastRestriction: unknown = null
+
+  for (let round = 0; round < MAX_EXCLUSION_ROUNDS; round++) {
     try {
       const data = await retryTransient(() =>
-        client(SEARCH_QUERY, { q: searchQuery(bucket, excluded) }),
+        client(SEARCH_QUERY, { q: buildSearchQuery(bucket, excluded) }),
       )
       return { ids: idsFromSearch(data), restrictedOrgs: excluded }
     } catch (error) {
       const named = restrictedOrganizations(error)
+      if (named.length === 0) throw error
+
+      lastRestriction = error
       const fresh = named.filter((org) => !excluded.includes(org))
-      if (fresh.length === 0) {
-        if (named.length === 0) throw error
-        return { ids: idsFromSearch(graphqlPartialData(error)), restrictedOrgs: excluded }
-      }
+      if (fresh.length === 0) break
       excluded.push(...fresh)
     }
   }
-  return { ids: [], restrictedOrgs: excluded }
+
+  // Either GitHub named the same orgs again or the rounds ran out. Excluding
+  // more is not going to produce a clean response, so keep whatever came back
+  // alongside the last error rather than dropping the bucket entirely.
+  return { ids: idsFromSearch(graphqlPartialData(lastRestriction)), restrictedOrgs: excluded }
 }
 
 /**
@@ -187,8 +194,10 @@ async function fetchDetails(
       fetchDetails(client, ids.slice(0, half), false),
       fetchDetails(client, ids.slice(half), false),
     ])
-    const restrictedOrgs = [...new Set(halves.flatMap((part) => part.restrictedOrgs))].sort()
-    return { nodes: halves.flatMap((part) => part.nodes), restrictedOrgs }
+    return {
+      nodes: halves.flatMap((part) => part.nodes),
+      restrictedOrgs: mergeOrgs(...halves.map((part) => part.restrictedOrgs)),
+    }
   }
 }
 
@@ -214,9 +223,7 @@ async function collectIds(
   )
 
   const byId = new Map<string, Set<SearchBucket>>()
-  const restrictedOrgs = new Set<string>()
-  for (const { bucket, ids, restrictedOrgs: orgs } of results) {
-    for (const org of orgs) restrictedOrgs.add(org)
+  for (const { bucket, ids } of results) {
     for (const id of ids) {
       const buckets = byId.get(id) ?? new Set<SearchBucket>()
       buckets.add(bucket)
@@ -224,7 +231,7 @@ async function collectIds(
     }
   }
 
-  return { byId, restrictedOrgs: [...restrictedOrgs].sort() }
+  return { byId, restrictedOrgs: mergeOrgs(...results.map((result) => result.restrictedOrgs)) }
 }
 
 export async function fetchPullRequests(
@@ -232,8 +239,7 @@ export async function fetchPullRequests(
   myLogin: string,
 ): Promise<FetchedPullRequests> {
   const metered = meterRateLimit(client)
-  const { byId: bucketsById, restrictedOrgs } = await collectIds(metered.client)
-  const hidden = new Set(restrictedOrgs)
+  const { byId: bucketsById, restrictedOrgs: searchRestrictions } = await collectIds(metered.client)
 
   // The detail batches also run concurrently. `Promise.all` returns results
   // in the same order as the promises it was given — i.e. the order the
@@ -245,8 +251,7 @@ export async function fetchPullRequests(
   const batchResults = await Promise.all(batches.map((ids) => fetchDetails(metered.client, ids)))
 
   const prs: PullRequest[] = []
-  for (const { nodes, restrictedOrgs: orgs } of batchResults) {
-    for (const org of orgs) hidden.add(org)
+  for (const { nodes } of batchResults) {
     for (const node of nodes) {
       if (!node) continue
       prs.push(mapPullRequest(node, [...(bucketsById.get(node.id) ?? [])], myLogin))
@@ -256,5 +261,9 @@ export async function fetchPullRequests(
   // Only on the way out: a fetch that threw has no complete number to report.
   metered.report()
 
-  return { prs, restrictedOrgs: [...hidden].sort() }
+  const restrictedOrgs = mergeOrgs(
+    searchRestrictions,
+    ...batchResults.map((batch) => batch.restrictedOrgs),
+  )
+  return { prs, restrictedOrgs }
 }

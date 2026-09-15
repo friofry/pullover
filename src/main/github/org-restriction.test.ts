@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   formatRestrictedOrgs,
   graphqlPartialData,
+  mergeOrgs,
   restrictedOrganizations,
 } from './org-restriction'
 
@@ -75,5 +76,20 @@ describe('formatRestrictedOrgs', () => {
     expect(formatRestrictedOrgs(['acme', 'beta', 'status-im'])).toBe(
       "acme, beta and status-im haven't approved Pullover",
     )
+  })
+})
+
+describe('mergeOrgs', () => {
+  it('is empty when there is nothing to merge', () => {
+    expect(mergeOrgs()).toEqual([])
+    expect(mergeOrgs([], [])).toEqual([])
+  })
+
+  it('deduplicates across lists and sorts, so the warning copy is stable', () => {
+    expect(mergeOrgs(['status-im'], ['acme', 'status-im'], ['beta'])).toEqual([
+      'acme',
+      'beta',
+      'status-im',
+    ])
   })
 })

@@ -452,6 +452,36 @@ describe('fetchPullRequests', () => {
     expect(result.restrictedOrgs).toEqual(['status-im'])
   })
 
+  it('keeps the results it has when the rounds of exclusion run out', async () => {
+    // A fresh org named on every single response, so no number of retries
+    // reaches a clean search. What GitHub did return must still survive.
+    let round = 0
+    const client = vi.fn(async (query: string) => {
+      if (query === SEARCH_QUERY) {
+        round += 1
+        throw new GraphqlResponseError(
+          { method: 'POST', url: 'https://api.github.com/graphql' },
+          {},
+          {
+            data: { search: { nodes: [{ id: 'PR_1' }] } },
+            errors: [
+              {
+                message: `the \`org-${round}\` organization has enabled OAuth App access restrictions`,
+              },
+            ],
+          } as never,
+        )
+      }
+      if (query === DETAILS_QUERY) return { nodes: [detailNode('PR_1')] }
+      throw new Error(`unexpected query: ${query}`)
+    })
+
+    const result = await fetchPullRequests(client, 'vlad')
+
+    expect(result.prs.map((pr) => pr.id)).toEqual(['PR_1'])
+    expect(result.restrictedOrgs.length).toBeGreaterThan(0)
+  })
+
   it('keeps other PRs when a detail batch names a restricted org', async () => {
     const restriction = new GraphqlResponseError(
       { method: 'POST', url: 'https://api.github.com/graphql' },
