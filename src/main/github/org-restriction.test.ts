@@ -75,6 +75,19 @@ describe('isOnlyRestriction', () => {
     expect(isOnlyRestriction(error)).toBe(false)
   })
 
+  it('is true for the plain 403 shape, which carries no `errors` to walk', () => {
+    // Every salvage in fetch-prs.ts is gated on this, and for a non-GraphQL
+    // error it rests on the regex alone. If that ever stops agreeing with the
+    // `.every()` path, restricted orgs quietly stop being recovered.
+    const error = Object.assign(
+      new Error(
+        'Although you appear to have the correct authorization credentials, the `status-im` organization has enabled OAuth App access restrictions, meaning that data access to third-parties is limited.',
+      ),
+      { status: 403 },
+    )
+    expect(isOnlyRestriction(error)).toBe(true)
+  })
+
   it('is false for an unrelated failure', () => {
     expect(isOnlyRestriction(new Error('network down'))).toBe(false)
   })
