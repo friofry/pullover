@@ -38,6 +38,7 @@ GitHub notifications bury the one thing that matters — *whose move is it?* Pul
 - 🌗 **Light, dark, roomy or dense.** Follows your macOS appearance out of the box, and can pack down to one row per PR when your list gets long.
 - ⬇️ **Updates itself quietly.** New versions download in the background; Pullover then offers a restart and waits for you to take it.
 - 👀 **Read-only by design.** Pullover never comments, approves, or merges. Clicking a PR opens it on github.com — you act where you always did.
+- 🤖 **Talks to your agents.** An optional MCP server, local to your Mac, lets Claude Code and other agents ask which PRs are waiting on you and why — and park the ones that can wait — from the same inbox you see, with no extra GitHub token.
 
 ## 📦 Install
 
@@ -96,8 +97,30 @@ Click the menu-bar item, hit **Sign in with GitHub**. Pullover shows you a short
 
 </details>
 
+## 🤖 Agent-friendly
+
+Let your agents check the inbox for you:
+
+> *"Hey Claude, check Pullover to see what's on my plate right now."*
+
+They get the same classified inbox the window shows — what is waiting on you and why — with no extra GitHub token and no rules to re-implement. They can also park a pull request until tomorrow, which is the one thing your GitHub tooling cannot do.
+
+<p align="center">
+  <img src="docs/demo-agents.gif" width="70%" alt="A terminal: the claude mcp add line is run and the server is added, then Claude is asked what is on your plate and answers with the classified inbox — nine pull requests under Needs your review, Replies to you, Take another look, Your PRs and Mentions, each with its repository and number, its title, why it needs you and how long it has waited. Asked to snooze the Checkout stack until tomorrow, it parks all three and reports that GitHub was not touched." />
+</p>
+
+Turn on **MCP server** in Settings, then hand your client the address it shows:
+
+```bash
+claude mcp add --transport http pullover http://127.0.0.1:7855/mcp
+```
+
+Nothing an agent does through Pullover reaches GitHub: it reads, and a snooze is a note on this Mac. To reply or approve, it uses its own GitHub tooling at the link Pullover gives it.
+
+**[Set up any client → MCP.md](MCP.md)**
+
 ## 🔐 Privacy
 
-Pullover has no backend. There's no server in the middle, no account to create, no analytics, no telemetry, no crash reporting — the app talks to exactly one place, GitHub's API, straight from your Mac. Your OAuth token never leaves the machine: it's encrypted via the macOS Keychain (Electron's `safeStorage`) and stored locally. And you don't have to take anyone's word for any of this — the entire app is open source, right here in this repo.
+Pullover has no backend. There's no server in the middle, no account to create, no analytics, no telemetry, no crash reporting — the app talks to exactly one place, GitHub's API, straight from your Mac. The optional MCP server is off until you turn it on, and listens to this Mac alone. Your OAuth token never leaves the machine: it's encrypted via the macOS Keychain (Electron's `safeStorage`) and stored locally. And you don't have to take anyone's word for any of this — the entire app is open source, right here in this repo.
 
-Pullover only ever reads — never a comment, a review, or any other write. Sign-in asks for `repo` and `read:org`, the narrowest scopes GitHub offers that can still see pull requests in private repositories and review requests that arrived through a team; if your organisation restricts third-party OAuth Apps, an owner has to approve Pullover under **Settings → Third-party Actions Access** before those repos show up.
+Pullover only ever reads from GitHub — never a comment, a review, or any other write there. The one thing it writes is its own snooze list, in a file on this Mac. Sign-in asks for `repo` and `read:org`, the narrowest scopes GitHub offers that can still see pull requests in private repositories and review requests that arrived through a team; if your organisation restricts third-party OAuth Apps, an owner has to approve Pullover under **Settings → Third-party Actions Access** before those repos show up.

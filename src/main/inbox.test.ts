@@ -50,6 +50,121 @@ function build(prs: PullRequest[], overrides: Record<string, unknown> = {}) {
   })
 }
 
+describe('Inbox.findPullRequest', () => {
+  it('finds a pull request the repository filter hides, classified on the spot', async () => {
+    // The store watches acme/web only; acme/api is fetched but never shown.
+    const inbox = build([
+      makePullRequest({ id: 'PR_1', repository: 'acme/web', number: 1 }),
+      makePullRequest({
+        id: 'PR_9',
+        repository: 'acme/api',
+        number: 9,
+        buckets: ['review-requested'],
+      }),
+    ])
+    await inbox.refresh()
+
+    expect(inbox.getSnapshot().items.map((item) => item.pr.id)).toEqual([])
+    const found = inbox.findPullRequest('acme/api', 9)
+    expect(found?.pr.id).toBe('PR_9')
+    expect(found?.category).toBe('needs-review')
+    expect(found?.stack).toBeNull()
+  })
+
+  it('matches the repository name whatever its case', async () => {
+    const inbox = build([makePullRequest({ id: 'PR_1', repository: 'Acme/Web', number: 1 })])
+    await inbox.refresh()
+    expect(inbox.findPullRequest('acme/web', 1)?.pr.id).toBe('PR_1')
+  })
+
+  it('returns null for a pull request it has never fetched', async () => {
+    const inbox = build([makePullRequest({ id: 'PR_1', number: 1 })])
+    await inbox.refresh()
+    expect(inbox.findPullRequest('acme/web', 404)).toBeNull()
+  })
+
+  it('returns null while signed out', () => {
+    expect(build([], { getClient: () => null }).findPullRequest('acme/web', 1)).toBeNull()
+  })
+})
+
+describe('Inbox.whenIdle', () => {
+  it('resolves only once the pass that is running has finished', async () => {
+    let release = (): void => {}
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const inbox = build([], {
+      fetchPrs: async () => {
+        await held
+        return [makePullRequest({ id: 'PR_1', buckets: ['review-requested'] })]
+      },
+    })
+
+    const pass = inbox.refresh()
+    expect(inbox.getSnapshot().status).toBe('loading')
+
+    const idle = inbox.whenIdle()
+    release()
+    await idle
+    expect(inbox.getSnapshot().status).toBe('ready')
+    await pass
+  })
+
+  it('waits for a queued follow-up pass too, not just the one running', async () => {
+    let releaseFirst = (): void => {}
+    let releaseSecond = (): void => {}
+    const first = new Promise<void>((resolve) => {
+      releaseFirst = resolve
+    })
+    const second = new Promise<void>((resolve) => {
+      releaseSecond = resolve
+    })
+    let fetches = 0
+    const inbox = build([], {
+      fetchPrs: async () => {
+        fetches += 1
+        await (fetches === 1 ? first : second)
+        return []
+      },
+    })
+
+    const pass = inbox.refresh()
+    const queued = inbox.refresh()
+    let settled = false
+    const idle = inbox.whenIdle().then(() => {
+      settled = true
+    })
+
+    releaseFirst()
+    // Long enough for every pending turn to run. The follow-up pass is now
+    // in flight and still held, so a wait that covered only the first pass
+    // has already resolved by here.
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(settled).toBe(false)
+
+    releaseSecond()
+    await idle
+    expect(fetches).toBe(2)
+    await Promise.all([pass, queued])
+  })
+
+  it('resolves even when the pass it waited for failed', async () => {
+    const inbox = build([], {
+      getClient: () => {
+        throw new Error('the keychain is locked')
+      },
+    })
+    const pass = inbox.refresh().catch(() => undefined)
+    await expect(inbox.whenIdle()).resolves.toBeUndefined()
+    await pass
+  })
+
+  it('resolves at once when no pass is running', async () => {
+    await expect(build([]).whenIdle()).resolves.toBeUndefined()
+  })
+})
+
 describe('Inbox.refresh', () => {
   it('keeps the inbox ready when an org has not approved the OAuth app', async () => {
     const fetchPrs = vi.fn(async () => ({

@@ -1,4 +1,4 @@
-import { classifyAll, countAttention } from '@core/classify'
+import { classify, classifyAll, countAttention } from '@core/classify'
 import { formatWait } from '@core/format'
 import { collectRepositories, filterByRepositories } from '@core/repo-filter'
 import { computeStackPositions } from '@core/stack'
@@ -110,6 +110,26 @@ export class Inbox {
   }
 
   /**
+   * Looks in the unfiltered fetch, not in the snapshot: a caller naming a
+   * pull request by number should get an answer even when the repository
+   * filter or the classifier keeps it out of the window.
+   */
+  findPullRequest(repository: string, number: number): ClassifiedPullRequest | null {
+    if (this.myLogin === null) return null
+    const wanted = repository.toLowerCase()
+    const pr = this.prs.find((p) => p.number === number && p.repository.toLowerCase() === wanted)
+    if (pr === undefined) return null
+    const [item] = this.attachStacks([
+      classify(pr, {
+        myLogin: this.myLogin,
+        snoozes: this.deps.store.getSnoozes(),
+        now: this.now(),
+      }),
+    ])
+    return item ?? null
+  }
+
+  /**
    * Runs exactly one pass at a time. A caller that arrives while a pass is
    * already running does NOT join it — that pass may have already read
    * state (settings, the signed-in client) that predates this caller's
@@ -134,6 +154,18 @@ export class Inbox {
       .then(() => this.startQueuedPass())
 
     return this.queuedRefresh
+  }
+
+  /**
+   * Resolves when the pass now running has finished, or at once when none
+   * is. Never rejects: a failed pass still ends in a snapshot, which is what
+   * a caller waiting for one is after.
+   */
+  whenIdle(): Promise<void> {
+    // The queued pass when there is one: it resolves after the pass running
+    // now *and* the follow-up behind it, which is what "idle" has to mean.
+    const pass = this.queuedRefresh ?? this.inFlightRefresh
+    return pass?.catch(() => undefined) ?? Promise.resolve()
   }
 
   private startQueuedPass(): Promise<void> {
