@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   formatRestrictedOrgs,
   graphqlPartialData,
+  isOnlyRestriction,
   mergeOrgs,
   restrictedOrganizations,
 } from './org-restriction'
@@ -43,6 +44,39 @@ describe('restrictedOrganizations', () => {
   it('is empty for an unrelated failure', () => {
     expect(restrictedOrganizations(new Error('Field "bogus" does not exist'))).toEqual([])
     expect(restrictedOrganizations('not an error')).toEqual([])
+  })
+})
+
+describe('restrictedOrganizations, on a plain 403', () => {
+  it('reads the org out of a REST-shaped error, which carries it only on `message`', () => {
+    const error = Object.assign(
+      new Error(
+        'Although you appear to have the correct authorization credentials, the `status-im` organization has enabled OAuth App access restrictions, meaning that data access to third-parties is limited.',
+      ),
+      { status: 403 },
+    )
+    expect(restrictedOrganizations(error)).toEqual(['status-im'])
+  })
+})
+
+describe('isOnlyRestriction', () => {
+  it('is true when every reported error is a restriction', () => {
+    expect(isOnlyRestriction(restrictionError('status-im'))).toBe(true)
+  })
+
+  it('is false when something else failed in the same response', () => {
+    const error = new GraphqlResponseError(REQUEST, {}, {
+      data: { search: { nodes: [] } },
+      errors: [
+        { message: 'the `status-im` organization has enabled OAuth App access restrictions' },
+        { message: 'Something went wrong while executing your query.' },
+      ],
+    } as never)
+    expect(isOnlyRestriction(error)).toBe(false)
+  })
+
+  it('is false for an unrelated failure', () => {
+    expect(isOnlyRestriction(new Error('network down'))).toBe(false)
   })
 })
 

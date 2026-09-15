@@ -57,8 +57,10 @@ visualCase(
   ),
 )
 
-// A restricted org is a warning on an otherwise healthy list: the line has to
-// read as a note beside the staleness, not as a failed refresh.
+// A restricted org is a warning on an otherwise healthy list, drawn exactly
+// like a failed refresh — nothing here separates the two. What the baseline
+// is for is the length: a single short org name already elides the staleness
+// this line is supposed to keep visible.
 visualCase(
   'restricted-org',
   header(snapshot({ errorMessage: "status-im hasn't approved Pullover" })),

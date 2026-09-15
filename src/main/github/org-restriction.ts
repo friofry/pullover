@@ -13,10 +13,12 @@ function messagesOf(error: unknown): string[] {
   return texts
 }
 
+const RESTRICTION = /the `([^`]+)` organization has enabled OAuth App access restrictions/i
+
 /** Orgs GitHub named in an OAuth-app restriction error, sorted for stable copy. */
 export function restrictedOrganizations(error: unknown): string[] {
   const orgs = new Set<string>()
-  const pattern = /the `([^`]+)` organization has enabled OAuth App access restrictions/gi
+  const pattern = new RegExp(RESTRICTION.source, 'gi')
   for (const text of messagesOf(error)) {
     for (const match of text.matchAll(pattern)) {
       const org = match[1]
@@ -29,6 +31,21 @@ export function restrictedOrganizations(error: unknown): string[] {
 /** Union of org names, deduplicated and sorted so the warning copy is stable. */
 export function mergeOrgs(...lists: string[][]): string[] {
   return [...new Set(lists.flat())].sort()
+}
+
+/**
+ * Whether a restriction is the *only* thing that went wrong.
+ *
+ * GitHub can report a timeout or a bad field in the same response as the
+ * locked-down org. Dropping such a bucket for "one org is restricted" would
+ * hide a real failure behind a warning that does not explain it, so anything
+ * else in `errors` has to reach the caller as an error.
+ */
+export function isOnlyRestriction(error: unknown): boolean {
+  // Not a GraphQL response: a plain 403 carries one message, already matched.
+  if (!(error instanceof GraphqlResponseError)) return restrictedOrganizations(error).length > 0
+  const entries = error.errors ?? []
+  return entries.length > 0 && entries.every((entry) => RESTRICTION.test(entry.message))
 }
 
 /** The payload @octokit/graphql stashes when it throws on a partial GraphQL response. */

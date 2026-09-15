@@ -2,7 +2,12 @@ import { mapPullRequest, type PullRequestNode } from '@core/map-pr'
 import { buildSearchQuery, chunk } from '@core/search-query'
 import { graphql } from '@octokit/graphql'
 import { type PullRequest, SEARCH_BUCKETS, type SearchBucket } from '@shared/types'
-import { graphqlPartialData, mergeOrgs, restrictedOrganizations } from './org-restriction'
+import {
+  graphqlPartialData,
+  isOnlyRestriction,
+  mergeOrgs,
+  restrictedOrganizations,
+} from './org-restriction'
 import { DETAILS_QUERY, SEARCH_QUERY, VIEWER_QUERY } from './queries'
 import { isTransientError } from './transient-error'
 
@@ -75,13 +80,22 @@ export interface FetchedPullRequests {
   restrictedOrgs: string[]
 }
 
-function idsFromSearch(data: unknown): string[] {
+/**
+ * The nodes in a payload, or null when there is no payload at all. The
+ * difference decides whether a failed request may be reported as an empty
+ * result: "GitHub answered, minus one org" can be, "nothing came back" cannot.
+ */
+function searchNodes(data: unknown): Array<{ id?: string } | null> | null {
   const search = (data as { search?: { nodes?: Array<{ id?: string } | null> } } | null)?.search
-  return (search?.nodes ?? []).flatMap((node) => (node?.id === undefined ? [] : [node.id]))
+  return search?.nodes ?? null
 }
 
-function nodesFromDetails(data: unknown): Array<PullRequestNode | null> {
-  return (data as { nodes?: Array<PullRequestNode | null> } | null)?.nodes ?? []
+function detailNodes(data: unknown): Array<PullRequestNode | null> | null {
+  return (data as { nodes?: Array<PullRequestNode | null> } | null)?.nodes ?? null
+}
+
+function idsFromSearch(nodes: Array<{ id?: string } | null>): string[] {
+  return nodes.flatMap((node) => (node?.id === undefined ? [] : [node.id]))
 }
 
 /**
@@ -130,10 +144,10 @@ async function searchBucket(
       const data = await retryTransient(() =>
         client(SEARCH_QUERY, { q: buildSearchQuery(bucket, excluded) }),
       )
-      return { ids: idsFromSearch(data), restrictedOrgs: excluded }
+      return { ids: idsFromSearch(searchNodes(data) ?? []), restrictedOrgs: excluded }
     } catch (error) {
       const named = restrictedOrganizations(error)
-      if (named.length === 0) throw error
+      if (named.length === 0 || !isOnlyRestriction(error)) throw error
 
       lastRestriction = error
       const fresh = named.filter((org) => !excluded.includes(org))
@@ -144,8 +158,12 @@ async function searchBucket(
 
   // Either GitHub named the same orgs again or the rounds ran out. Excluding
   // more is not going to produce a clean response, so keep whatever came back
-  // alongside the last error rather than dropping the bucket entirely.
-  return { ids: idsFromSearch(graphqlPartialData(lastRestriction)), restrictedOrgs: excluded }
+  // alongside the last error rather than dropping the bucket entirely — but
+  // only if something did. With no payload there is nothing to stand in for
+  // the bucket, and answering "empty" would be a lie the user acts on.
+  const salvaged = searchNodes(graphqlPartialData(lastRestriction))
+  if (salvaged === null) throw lastRestriction
+  return { ids: idsFromSearch(salvaged), restrictedOrgs: excluded }
 }
 
 /**
@@ -177,15 +195,19 @@ async function fetchDetails(
 ): Promise<{ nodes: Array<PullRequestNode | null>; restrictedOrgs: string[] }> {
   const request = async (): Promise<Array<PullRequestNode | null>> => {
     const data = await client(DETAILS_QUERY, { ids })
-    return nodesFromDetails(data)
+    return detailNodes(data) ?? []
   }
 
   try {
     return { nodes: await request(), restrictedOrgs: [] }
   } catch (error) {
+    // Same bargain as `searchBucket`: a restriction is survivable only while
+    // GitHub still hands back the nodes it could resolve. Without them this
+    // batch is a failure, and falls through to be treated as one.
     const orgs = restrictedOrganizations(error)
-    if (orgs.length > 0) {
-      return { nodes: nodesFromDetails(graphqlPartialData(error)), restrictedOrgs: orgs }
+    if (orgs.length > 0 && isOnlyRestriction(error)) {
+      const salvaged = detailNodes(graphqlPartialData(error))
+      if (salvaged !== null) return { nodes: salvaged, restrictedOrgs: orgs }
     }
     if (!isTransientError(error) || !maySplit) throw error
     if (ids.length === 1) return { nodes: await request(), restrictedOrgs: [] }

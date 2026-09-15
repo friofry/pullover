@@ -452,6 +452,74 @@ describe('fetchPullRequests', () => {
     expect(result.restrictedOrgs).toEqual(['status-im'])
   })
 
+  it('fails rather than reporting an empty bucket when the restriction carries no results', async () => {
+    // A plain 403 names the org but brings no payload, so there is nothing to
+    // stand in for the bucket. Answering "empty" would read as "no PRs".
+    const forbidden = Object.assign(
+      new Error(
+        'the `status-im` organization has enabled OAuth App access restrictions, meaning that data access to third-parties is limited.',
+      ),
+      { status: 403 },
+    )
+    const client = vi.fn(async (query: string) => {
+      if (query === SEARCH_QUERY) throw forbidden
+      throw new Error(`unexpected query: ${query}`)
+    })
+
+    await expect(fetchPullRequests(client, 'vlad')).rejects.toThrow(/status-im/)
+  })
+
+  it('fails when something else went wrong in the same response as the restriction', async () => {
+    const mixed = new GraphqlResponseError(
+      { method: 'POST', url: 'https://api.github.com/graphql' },
+      {},
+      {
+        data: { search: { nodes: [{ id: 'PR_1' }] } },
+        errors: [
+          { message: 'the `status-im` organization has enabled OAuth App access restrictions' },
+          { message: 'Something went wrong while executing your query.' },
+        ],
+      } as never,
+    )
+    const client = vi.fn(async (query: string) => {
+      if (query === SEARCH_QUERY) throw mixed
+      throw new Error(`unexpected query: ${query}`)
+    })
+
+    await expect(fetchPullRequests(client, 'vlad')).rejects.toThrow(/Something went wrong/)
+  })
+
+  it('stops asking once GitHub names the same org twice, keeping what it returned', async () => {
+    // The likelier of the two give-up paths: excluding the org changes nothing,
+    // so there is no point in a third round.
+    const stuck = new GraphqlResponseError(
+      { method: 'POST', url: 'https://api.github.com/graphql' },
+      {},
+      {
+        data: { search: { nodes: [{ id: 'PR_1' }] } },
+        errors: [
+          { message: 'the `status-im` organization has enabled OAuth App access restrictions' },
+        ],
+      } as never,
+    )
+    let searches = 0
+    const client = vi.fn(async (query: string) => {
+      if (query === SEARCH_QUERY) {
+        searches += 1
+        throw stuck
+      }
+      if (query === DETAILS_QUERY) return { nodes: [detailNode('PR_1')] }
+      throw new Error(`unexpected query: ${query}`)
+    })
+
+    const result = await fetchPullRequests(client, 'vlad')
+
+    expect(result.prs.map((pr) => pr.id)).toEqual(['PR_1'])
+    expect(result.restrictedOrgs).toEqual(['status-im'])
+    // Four buckets, two attempts each: the first, then one with the exclusion.
+    expect(searches).toBe(8)
+  })
+
   it('keeps the results it has when the rounds of exclusion run out', async () => {
     // A fresh org named on every single response, so no number of retries
     // reaches a clean search. What GitHub did return must still survive.

@@ -97,7 +97,7 @@ describe('Inbox.whenIdle', () => {
     const inbox = build([], {
       fetchPrs: async () => {
         await held
-        return [makePullRequest({ id: 'PR_1', buckets: ['review-requested'] })]
+        return fetched([makePullRequest({ id: 'PR_1', buckets: ['review-requested'] })])
       },
     })
 
@@ -125,7 +125,7 @@ describe('Inbox.whenIdle', () => {
       fetchPrs: async () => {
         fetches += 1
         await (fetches === 1 ? first : second)
-        return []
+        return fetched([])
       },
     })
 
